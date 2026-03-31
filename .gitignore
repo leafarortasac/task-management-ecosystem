@@ -1,0 +1,61 @@
+# --- Projetos Locais (Ignorar do Git) ---
+# Impede que as pastas clonadas localmente subam para este repositório de ecossistema
+task-app-mobile/
+task-web/
+
+# --- Docker & Infrastructure ---
+# Ignora os dados persistentes e logs do Mosquitto
+mosquitto/data/
+mosquitto/log/
+*.db
+*.log
+
+# Ignora volumes locais do Docker
+mysql_data/
+mongo_data/
+
+# --- Java / Spring Boot (Serviços) ---
+**/target/
+**.class
+**/mvnw
+**/mvnw.cmd
+**/.mvn/wrapper/
+.project
+.classpath
+.factorypath
+.settings/
+*.jar
+*.war
+*.ear
+
+# --- Node.js / React ---
+**/node_modules/
+**/dist/
+**/build/
+.eslintcache
+*.local
+
+# --- React Native / Mobile ---
+**/.expo/
+**/android/
+**/ios/
+**/.bundle/
+**/.gradle/
+**/local.properties
+**/.idea/
+**.iml
+.watchmanconfig
+
+# --- IDEs & System ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.bak
+*.tmp
+
+# --- Environment Files ---
+.env
+.env.production
+.env.development

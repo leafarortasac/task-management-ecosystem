@@ -1,0 +1,239 @@
+version: '3.8'
+
+services:
+  # --- INFRAESTRUTURA COM HEALTHCHECKS ---
+  mongodb:
+    image: mongo:latest
+    container_name: task-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_DATABASE=iam_db
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - task-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mysql-db:
+    image: mysql:8.0
+    container_name: task-mysql
+    ports:
+      - "3307:3306"
+    environment:
+      - MYSQL_DATABASE=taskdb
+      - MYSQL_ROOT_PASSWORD=root
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - task-network
+    healthcheck:
+      test: ["CMD", "mysqladmin" ,"ping", "-h", "localhost", "-u", "root", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:alpine
+    container_name: task-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - task-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: task-rabbit
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    networks:
+      - task-network
+    healthcheck:
+      # Este comando é mais confiável para verificar se a porta 5672 está aceitando conexões
+      test: [ "CMD-SHELL", "rabbitmq-diagnostics check_port_connectivity" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    container_name: task-mqtt
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+    networks:
+      - task-network
+
+  # --- SERVIÇOS BACKEND COM DEPENDÊNCIAS CONDICIONAIS ---
+
+  iam-service:
+    build:
+      context: ./
+      dockerfile: iam-service/Dockerfile
+    container_name: task-iam
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATA_MONGODB_URI=mongodb://mongodb:27017/iam_db
+      - JWT_SECRET=M2I3YzA5OGU1YmFhN2U3Zjk0ZWY0ZGIyYmU5ZDBjZjkxZWRhYmFmNjA4MGY1ZDIzM2M4ZGM0ZTI5N2I0YmU3YQ==
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - task-network
+
+  task-service:
+    build:
+      context: ./
+      dockerfile: task-service/Dockerfile
+    container_name: task-service
+    ports:
+      - "8081:8081"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:mysql://task-mysql:3306/taskdb?createDatabaseIfNotExist=true&serverTimezone=UTC
+      - SPRING_DATASOURCE_USERNAME=root
+      - SPRING_DATASOURCE_PASSWORD=root
+      - SPRING_REDIS_HOST=task-redis
+      - SPRING_REDIS_PORT=6379
+      - SPRING_RABBITMQ_HOST=task-rabbit
+      - SPRING_RABBITMQ_PORT=5672
+      - IAM_SERVICE_URL=http://task-iam:8080
+    # A mágica está aqui: ele espera os 3 estarem SAUDÁVEIS antes de tentar subir o Java
+    depends_on:
+      mysql-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      iam-service:
+        condition: service_started
+    networks:
+      - task-network
+
+  notification-service:
+    build:
+      context: ./
+      dockerfile: notification-service/Dockerfile
+    container_name: task-notification
+    ports:
+      - "8082:8082"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATA_MONGODB_URI=mongodb://mongodb:27017/notifications_db
+      - SPRING_RABBITMQ_HOST=task-rabbit
+      - SPRING_RABBITMQ_USERNAME=guest
+      - SPRING_RABBITMQ_PASSWORD=guest
+      - SPRING_MQTT_HOST=task-mqtt
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    networks:
+      - task-network
+
+  # --- INTERFACES E FRONTEND ---
+
+  mongo-express:
+    image: mongo-express:latest
+    container_name: mongo-gui
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    ports:
+      - "8085:8081"
+    environment:
+      - ME_CONFIG_MONGODB_SERVER=mongodb
+      - ME_CONFIG_MONGODB_PORT=27017
+      - ME_CONFIG_BASICAUTH_USERNAME=admin
+      - ME_CONFIG_BASICAUTH_PASSWORD=pass
+    networks:
+      - task-network
+
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: mysql-gui
+    depends_on:
+      mysql-db:
+        condition: service_healthy
+    ports:
+      - "8086:80"
+    environment:
+      - PMA_HOST=mysql-db
+      - MYSQL_ROOT_PASSWORD=root
+    networks:
+      - task-network
+
+  mqtt-dashboard:
+    image: nodered/node-red:latest
+    container_name: task-mqtt-dashboard
+    ports:
+      - "1880:1880"
+    depends_on:
+      - mosquitto
+    networks:
+      - task-network
+
+  task-web:
+    build:
+      context: ./task-web
+      dockerfile: Dockerfile
+    container_name: task-web
+    ports:
+      - "3000:80"
+    environment:
+      - VITE_API_IAM_URL=http://localhost:8080/v1
+      - VITE_API_TASK_URL=http://localhost:8081/v1
+      - VITE_API_NOTIFICATION_URL=http://localhost:8082/v1
+      - VITE_MQTT_HOST=localhost
+    depends_on:
+      - iam-service
+      - task-service
+      - notification-service
+    networks:
+      - task-network
+
+  task-app-mobile:
+    build:
+      context: ./task-app-mobile
+      dockerfile: Dockerfile
+    container_name: task-mobile-bundler
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./task-app-mobile:/app
+      - /app/node_modules
+    environment:
+      - REACT_NATIVE_PACKAGER_HOSTNAME=192.168.0.83
+    networks:
+      - task-network
+
+networks:
+  task-network:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  mongo_data:
